@@ -1,0 +1,118 @@
+% =====================================================================
+% Metodologia: Soft Actor-Critic (SAC) - teoria + uso no projeto
+% Cole depois da parte do PPO (metodologia_ppo.tex).
+% Valores tirados de treinar.py e da implementação do Stable-Baselines3.
+% Pacotes: amsmath, amssymb (e booktabs, se quiser trocar \hline).
+% Referências usadas: HAARNOJA et al. (2018a) = artigo SAC original (ICML);
+% HAARNOJA et al. (2018b) = "Soft Actor-Critic Algorithms and Applications";
+% FUJIMOTO et al. (2018) = TD3.
+% =====================================================================
+
+\subsection{Soft Actor-Critic (SAC)}
+
+Como segundo algoritmo, emprega-se o \textit{Soft Actor-Critic} (SAC) (HAARNOJA et al., 2018a), que difere do PPO em dois aspectos centrais. O primeiro é ser \textit{off-policy}: em vez de descartar as transições após cada atualização, o SAC as armazena em uma memória de repetição (\textit{replay buffer}) $\mathcal{D}$ e as reutiliza muitas vezes, inclusive aquelas geradas por versões anteriores da política. O segundo é seguir o princípio de máxima entropia: além do retorno, o agente maximiza a entropia da política, o que o incentiva a manter comportamentos variados enquanto isso não comprometer a recompensa:
+
+\begin{equation}
+    J(\pi) = \sum_{t} \mathbb{E}_{(s_t, a_t) \sim \rho_\pi} \Big[ r(s_t, a_t) + \alpha \, \mathcal{H}\big(\pi(\cdot \mid s_t)\big) \Big]
+    \label{eq:sac_objetivo}
+\end{equation}
+
+\noindent em que $\mathcal{H}(\pi(\cdot \mid s_t)) = -\mathbb{E}_{a \sim \pi}[\log \pi(a \mid s_t)]$ é a entropia da política e $\alpha > 0$ é a temperatura, que regula o peso da exploração em relação à recompensa.
+
+O SAC utiliza um ator $\pi_\theta$ e dois críticos $Q_{\phi_1}$ e $Q_{\phi_2}$, que estimam o valor de um par estado-ação, além de cópias desses críticos, as redes-alvo $Q_{\bar{\phi}_1}$ e $Q_{\bar{\phi}_2}$, que se atualizam lentamente. Os críticos são treinados com a equação de Bellman na versão ``suave'', que inclui o termo de entropia no valor do estado seguinte:
+
+\begin{equation}
+    y = r + \gamma (1 - d) \left( \min_{j=1,2} Q_{\bar{\phi}_j}(s', \tilde{a}') - \alpha \log \pi_\theta(\tilde{a}' \mid s') \right), \qquad \tilde{a}' \sim \pi_\theta(\cdot \mid s')
+    \label{eq:sac_alvo}
+\end{equation}
+
+\begin{equation}
+    L_Q(\phi_j) = \mathbb{E}_{(s, a, r, s', d) \sim \mathcal{D}} \left[ \big( Q_{\phi_j}(s, a) - y \big)^2 \right], \qquad j = 1, 2
+    \label{eq:sac_critico}
+\end{equation}
+
+\noindent em que $d$ indica o término do episódio. O uso do menor valor entre os dois críticos reduz a tendência de superestimação dos valores, comum em métodos ator-crítico (FUJIMOTO et al., 2018).
+
+A política é uma distribuição normal cuja média $\mu_\theta(s)$ e desvio-padrão $\sigma_\theta(s)$ são produzidos pela rede do ator, seguida de uma tangente hiperbólica que mantém as ações no intervalo $[-1, 1]$. Para que o gradiente do crítico possa ser propagado até o ator, a ação é escrita como função determinística dos parâmetros e de um ruído independente (truque de reparametrização):
+
+\begin{equation}
+    \tilde{a}_\theta(s, \xi) = \tanh\big( \mu_\theta(s) + \sigma_\theta(s) \odot \xi \big), \qquad \xi \sim \mathcal{N}(0, I)
+    \label{eq:sac_reparam}
+\end{equation}
+
+\noindent e o ator é atualizado para escolher ações de alto valor e alta entropia, minimizando:
+
+\begin{equation}
+    L_\pi(\theta) = \mathbb{E}_{s \sim \mathcal{D},\, \xi} \left[ \alpha \log \pi_\theta\big(\tilde{a}_\theta(s, \xi) \mid s\big) - \min_{j=1,2} Q_{\phi_j}\big(s, \tilde{a}_\theta(s, \xi)\big) \right]
+    \label{eq:sac_ator}
+\end{equation}
+
+A temperatura $\alpha$ é ajustada automaticamente (HAARNOJA et al., 2018b), de modo a manter a entropia da política próxima de um valor-alvo $\bar{\mathcal{H}}$:
+
+\begin{equation}
+    L(\alpha) = \mathbb{E}_{a \sim \pi_\theta} \left[ -\alpha \big( \log \pi_\theta(a \mid s) + \bar{\mathcal{H}} \big) \right]
+    \label{eq:sac_alpha}
+\end{equation}
+
+\noindent Por fim, as redes-alvo seguem os críticos por média móvel exponencial, $\bar{\phi}_j \leftarrow \tau \phi_j + (1 - \tau) \bar{\phi}_j$, o que estabiliza o alvo da Equação~\ref{eq:sac_alvo}.
+
+\subsection{Aplicação do SAC ao braço robótico}
+
+O SAC foi treinado no mesmo ambiente descrito para o PPO, com o mesmo espaço de estados de 17 dimensões, o mesmo espaço de ações contínuo $a_t \in [-1, 1]^4$, com os limites angulares da Tabela~\ref{tab:juntas}, a mesma função de recompensa (Equação~\ref{eq:recompensa}) e as mesmas condições de término, de modo que as diferenças observadas se devem apenas ao algoritmo. Como a saída do ator do SAC já é limitada a $[-1, 1]$ pela tangente hiperbólica, ela corresponde diretamente ao intervalo de ações do ambiente.
+
+\subsubsection{Arquitetura das redes}
+
+Foram utilizadas redes do tipo \textit{perceptron} multicamadas com duas camadas ocultas de 256 neurônios e ativação ReLU:
+
+\begin{itemize}
+    \item \textbf{Ator} ($\pi_\theta$): recebe o estado (17 valores) e produz a média e o logaritmo do desvio-padrão de cada uma das 4 componentes da ação;
+    \item \textbf{Críticos} ($Q_{\phi_1}$, $Q_{\phi_2}$): recebem o estado e a ação concatenados (21 valores) e produzem uma única saída, o valor $Q(s, a)$;
+    \item \textbf{Redes-alvo} ($Q_{\bar{\phi}_1}$, $Q_{\bar{\phi}_2}$): cópias dos críticos, não treinadas por gradiente.
+\end{itemize}
+
+\subsubsection{Hiperparâmetros}
+
+Foi utilizada a implementação do SAC da biblioteca Stable-Baselines3 (RAFFIN et al., 2021), com otimizador Adam para o ator, os críticos e a temperatura. Os hiperparâmetros estão na Tabela~\ref{tab:sac}. O valor-alvo da entropia segue o padrão da biblioteca, igual a menos a dimensão do espaço de ações ($\bar{\mathcal{H}} = -4$).
+
+\begin{table}[htb]
+    \centering
+    \caption{Hiperparâmetros do SAC}
+    \label{tab:sac}
+    \begin{tabular}{lc}
+        \hline
+        Parâmetro & Valor \\
+        \hline
+        Taxa de aprendizado (ator, críticos e $\alpha$) & $3 \times 10^{-4}$ \\
+        Fator de desconto $\gamma$                         & 0,99 \\
+        Tamanho do \textit{replay buffer}                  & 1.000.000 \\
+        Tamanho do lote                                    & 256 \\
+        Passos iniciais com ações aleatórias               & 5.000 \\
+        Atualizações por passo do ambiente                 & 1 \\
+        Coeficiente das redes-alvo $\tau$                  & 0,005 \\
+        Temperatura $\alpha$                               & automática (valor inicial 1) \\
+        Entropia-alvo $\bar{\mathcal{H}}$                  & $-4$ \\
+        Ambientes em paralelo                              & 1 \\
+        Camadas ocultas (ator e críticos)                  & $2 \times 256$, ReLU \\
+        Total de passos de treinamento                     & 300.000 \\
+        \hline
+    \end{tabular}
+\end{table}
+
+\subsubsection{Procedimento de treinamento}
+
+Nos primeiros 5.000 passos, o agente executa ações sorteadas uniformemente para preencher o \textit{replay buffer} com experiências variadas. A partir daí, a cada passo do ambiente:
+
+\begin{enumerate}
+    \item uma ação é amostrada da política atual (Equação~\ref{eq:sac_reparam}), executada no ambiente, e a transição $(s, a, r, s', d)$ é armazenada em $\mathcal{D}$;
+    \item um lote de 256 transições é sorteado de $\mathcal{D}$;
+    \item os dois críticos são atualizados pela Equação~\ref{eq:sac_critico}, com o alvo da Equação~\ref{eq:sac_alvo};
+    \item o ator é atualizado pela Equação~\ref{eq:sac_ator};
+    \item a temperatura $\alpha$ é ajustada pela Equação~\ref{eq:sac_alpha};
+    \item as redes-alvo são atualizadas com $\tau = 0{,}005$.
+\end{enumerate}
+
+O SAC recebeu menos passos de treinamento que o PPO (300.000 contra 1.000.000) porque, ao reutilizar as experiências armazenadas, necessita de menos interações com o ambiente; em contrapartida, cada passo envolve a atualização de várias redes e é computacionalmente mais caro. Utilizou-se um único ambiente, pois o algoritmo realiza uma atualização a cada passo. O protocolo de avaliação foi o mesmo do PPO: a cada 10.000 passos, 20 episódios com a política determinística (ação média), registrando-se o retorno médio e a taxa de sucesso, e o modelo de maior retorno foi salvo. Assim como no PPO, foi utilizada uma semente aleatória (semente 0), e o melhor modelo foi avaliado em 100 episódios com as mesmas posições de caixa.
+
+\subsubsection{Experimento de controle: recompensa esparsa}
+
+Para avaliar a contribuição da recompensa moldada da Equação~\ref{eq:recompensa}, o SAC também foi treinado, com os mesmos hiperparâmetros, utilizando uma recompensa esparsa, que vale $+10$ quando a tarefa é concluída e $0$ em qualquer outro passo, sem nenhuma indicação intermediária sobre a aproximação, a preensão ou a elevação da caixa. Esse experimento foi executado por 100.000 passos.

@@ -1,0 +1,78 @@
+GARRA ROBÓTICA COM APRENDIZADO POR REFORÇO (PPO e SAC) + OpenGL
+=================================================================
+
+1) INSTALAR O PYTHON (uma vez só)
+---------------------------------
+- Baixe o Python em https://www.python.org/downloads/ (testado com 3.14).
+- Na instalação, MARQUE a opção "Add python.exe to PATH".
+- Feche e abra de novo o Antigravity.
+
+2) INSTALAR AS BIBLIOTECAS
+--------------------------
+No terminal do Antigravity, dentro desta pasta:
+
+    python -m pip install -r requirements.txt
+
+(o PyTorch é grande, pode demorar alguns minutos)
+
+3) ORDEM PARA USAR
+------------------
+a) Testar se a simulação funciona (sem janela):
+       python testar_ambiente.py
+
+b) Ver o OpenGL e mexer o braço pelo teclado:
+       python controle_manual.py
+   Q/A ombro, W/S cotovelo, E/D punho, F fecha, O abre, R recomeça,
+   setas e Z/X movem a câmera.
+
+c) Treinar (sem janela, é o passo demorado):
+       python treinar.py --algo sac --passos 300000
+       python treinar.py --algo ppo --passos 1000000
+   Para o artigo, rode cada algoritmo com mais de uma semente:
+       python treinar.py --algo sac --seed 1
+       python treinar.py --algo sac --seed 2   (e o mesmo para ppo)
+
+d) Assistir ao braço treinado e medir a taxa de sucesso:
+       python avaliar.py --algo sac --modelo modelos/sac_seed0/best_model.zip
+       python avaliar.py --algo sac --modelo modelos/sac_seed0/best_model.zip --episodios 100 --sem-janela
+
+e) Gerar os gráficos para o artigo (graficos/curvas.png):
+       python graficos.py
+
+f) (Opcional) Acompanhar o treino ao vivo:
+       python -m tensorboard.main --logdir logs
+   e abra http://localhost:6006 no navegador.
+
+Tempo aproximado neste PC: SAC ~180 passos/s (300 mil passos = ~30 min);
+PPO ~2000 passos/s (1 milhão de passos = ~8 min).
+
+4) O QUE CADA ARQUIVO FAZ
+-------------------------
+ambiente.py        A simulação: juntas com limite de ângulo (sem 360 graus),
+                   todas no mesmo eixo, garra, caixa, recompensa. É o
+                   "mundo" com o qual o agente conversa (reset/step).
+render.py          O OpenGL: desenha chão, caixa, braço e garra usando
+                   modelagem hierárquica (glPushMatrix/glRotate/glTranslate).
+treinar.py         Cria o PPO ou o SAC e treina. Os hiperparâmetros estão lá
+                   (copie para a tabela do artigo).
+avaliar.py         Carrega o modelo treinado, mostra na janela e dá a taxa
+                   de sucesso.
+controle_manual.py Você controla o braço pelo teclado (bom para testar).
+testar_ambiente.py Checagem automática do ambiente.
+graficos.py        Curvas de aprendizado PPO x SAC para o artigo.
+
+5) SIMPLIFICAÇÕES (citar no artigo, na parte de limitações)
+-----------------------------------------------------------
+- A física é simplificada: a caixa "gruda" na garra quando ela fecha perto
+  o suficiente e cai em linha reta quando a garra abre. Não há atrito real.
+- O braço se move em um plano (todas as juntas no eixo Z), mas é desenhado
+  em 3D.
+- Uma caixa por episódio, em posição sorteada no chão.
+
+6) SE ALGO DER ERRADO
+---------------------
+- "python não é reconhecido": o Python não foi adicionado ao PATH;
+  reinstale marcando a opção do passo 1.
+- Janela não abre / erro de OpenGL: atualize o driver da placa de vídeo.
+- O agente não aprende: aumente --passos, ou ajuste a recompensa em
+  ambiente.py (seção "Recompensa em etapas").

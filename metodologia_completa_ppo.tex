@@ -1,0 +1,191 @@
+% =====================================================================
+% METODOLOGIA COMPLETA (até o PPO)
+% Parte 1: o seu texto (só corrigi "desquilibrem" e a concordância da
+%          última frase).
+% Parte 2: como o PPO é usado no trabalho, com os valores reais do código
+%          e dos treinos.
+% Preâmbulo precisa de: \usepackage{amsmath} e \usepackage{amssymb}
+% =====================================================================
+
+\section{Metodologia}
+
+No aprendizado por reforço (RL), o agente interage com o ambiente em passos de tempo discretos. A cada instante, ele observa um estado $s_t$, seleciona uma ação $a_t$ e recebe uma recompensa $r_t$ (positiva ou negativa), transitando em seguida para um novo estado $s_{t+1}$. Diferente do aprendizado supervisionado, o agente deve aprender a partir das consequências de suas próprias ações, balanceando os processos de exploração (\textit{exploration}) e aproveitamento (\textit{exploitation}), com o objetivo de maximizar o retorno acumulado (SCHULMAN et al., 2017)
+
+Para este trabalho, emprega-se o algoritmo \textit{Proximal Policy Optimization} (PPO). Os métodos de gradiente de política parametrizam uma política estocástica $\pi_\theta(a_t \mid s_t)$ e estimam o gradiente do objetivo a partir de trajetórias amostradas por meio de:
+
+\begin{equation}
+    \hat{g} = \hat{\mathbb{E}}_t \left[ \nabla_\theta \log \pi_\theta(a_t \mid s_t) \hat{A}_t \right]
+    \label{eq:policy_gradient}
+\end{equation}
+
+\noindent onde $\hat{A}_t$ denota o estimador da função de vantagem no instante $t$.
+
+Embora como primeira ideia seria reutilizar a mesma trajetória em múltiplos passos de otimização, essa abordagem carece de garantia teórica e, empiricamente, provoca passos de atualização destrutivamente grandes na política (SCHULMAN et al., 2017). Para contornar essa instabilidade, o PPO define a razão de probabilidades entre a política atual e a anterior:
+
+\begin{equation}
+    r_t(\theta) = \frac{\pi_\theta(a_t \mid s_t)}{\pi_{\theta_{\text{old}}}(a_t \mid s_t)}
+    \label{eq:ratio}
+\end{equation}
+
+\noindent e otimiza uma função objetivo truncada (\textit{clipped surrogate objective}):
+
+\begin{equation}
+    L^{\text{CLIP}}(\theta) = \hat{\mathbb{E}}_t \left[ \min \left( r_t(\theta)\hat{A}_t, \, \text{clip}(r_t(\theta), 1-\epsilon, 1+\epsilon)\hat{A}_t \right) \right]
+    \label{eq:ppo_clip}
+\end{equation}
+
+\noindent onde $\epsilon$ é um hiperparâmetro (tipicamente $\epsilon = 0{,}2$). O operador de corte restringe a variação da razão de probabilidades ao intervalo $[1-\epsilon, 1+\epsilon]$. Com isso, ações associadas a vantagens positivas têm sua probabilidade elevada e ações com vantagens negativas têm sua probabilidade reduzida, porém sem permitir que atualizações com valores errados desequilibrem o desempenho da política.
+
+% ---------------------------------------------------------------------
+% A PARTIR DAQUI: COMO O PPO É USADO NO TRABALHO
+% ---------------------------------------------------------------------
+
+Nas subseções a seguir, descreve-se como o PPO foi aplicado ao problema deste trabalho: o ambiente simulado do braço robótico, a formulação dos estados, ações e recompensas, a arquitetura das redes, os hiperparâmetros e o procedimento de treinamento.
+
+\subsection{Ambiente de simulação}
+
+O ambiente foi implementado em Python seguindo a interface da biblioteca Gymnasium, na qual o agente interage com a simulação por meio de duas operações: o reinício de um episódio e a execução de um passo, que recebe uma ação e devolve o novo estado, a recompensa e a indicação de término. A simulação (cinemática do braço, preensão e recompensa) foi separada da renderização, feita com OpenGL. Dessa forma, o treinamento é executado sem janela gráfica, o que o torna consideravelmente mais rápido, e a visualização em OpenGL é ativada apenas para validar a simulação, acompanhar o agente treinado e gravar animações.
+
+O braço é composto por três segmentos rígidos, de comprimentos $L_1 = 0{,}50$~m, $L_2 = 0{,}40$~m e $L_3 = 0{,}20$~m, ligados por três juntas rotacionais (ombro, cotovelo e punho), montados sobre um pedestal de altura $h_b = 0{,}10$~m, com uma garra de dois dedos na extremidade. Todas as juntas giram em torno do mesmo eixo ($z$), de modo que o movimento ocorre em um plano vertical. Cada junta possui limites angulares que impedem a rotação completa, conforme a Tabela~\ref{tab:juntas}.
+
+\begin{table}[htb]
+    \centering
+    \caption{Limites angulares das juntas}
+    \label{tab:juntas}
+    \begin{tabular}{lccc}
+        \hline
+        Junta & Comprimento (m) & $\theta_{\min}$ & $\theta_{\max}$ \\
+        \hline
+        Ombro    & 0,50 & $10^\circ$   & $170^\circ$ \\
+        Cotovelo & 0,40 & $-150^\circ$ & $150^\circ$ \\
+        Punho    & 0,20 & $-120^\circ$ & $120^\circ$ \\
+        \hline
+    \end{tabular}
+\end{table}
+
+O ângulo do ombro é medido em relação ao chão e os demais em relação ao segmento anterior. Sendo $\phi_i = \sum_{k=1}^{i} \theta_k$ o ângulo acumulado até a junta $i$, a posição da extremidade $\mathbf{p} = (x, y)$ é obtida por cinemática direta:
+
+\begin{equation}
+    x = \sum_{i=1}^{3} L_i \cos \phi_i, \qquad
+    y = h_b + \sum_{i=1}^{3} L_i \sin \phi_i
+    \label{eq:cinematica}
+\end{equation}
+
+O objeto é uma caixa cúbica de $0{,}08$~m de aresta, posicionada no chão no início de cada episódio com a coordenada $x$ sorteada uniformemente no intervalo $[0{,}35;\,0{,}85]$~m, dentro do alcance do braço. Adotou-se um modelo de preensão simplificado, sem simulação de atrito: a caixa é considerada presa quando a abertura da garra é menor que $0{,}3$ e a distância entre a extremidade e o centro da caixa é menor que $0{,}05$~m. Enquanto presa, a caixa acompanha a extremidade; se a abertura ultrapassar $0{,}5$, a caixa é solta e cai $0{,}02$~m por passo até o chão.
+
+Na renderização, cada segmento é um cubo unitário escalado e cada junta é uma esfera. O braço é desenhado por modelagem hierárquica com a pilha de matrizes do OpenGL: para cada junta, aplica-se uma rotação pelo ângulo $\theta_i$ em torno do eixo $z$, desenha-se o segmento e aplica-se uma translação de comprimento $L_i$ até a junta seguinte, de modo que a transformação de cada segmento acumula as de todos os anteriores. A cena usa projeção em perspectiva, iluminação com uma fonte pontual e teste de profundidade (\textit{Z-buffer}).
+
+\subsection{Formulação do problema para o PPO}
+
+\subsubsection{Espaço de estados}
+
+O estado $s_t$ fornecido à política é um vetor de 17 valores reais:
+
+\begin{equation}
+    s_t = \big[\, \sin\boldsymbol{\theta},\; \cos\boldsymbol{\theta},\; \tilde{\boldsymbol{\theta}},\; g,\; \mathbf{p},\; \mathbf{c},\; \mathbf{c} - \mathbf{p},\; b \,\big]
+    \label{eq:estado}
+\end{equation}
+
+\noindent em que $\boldsymbol{\theta} \in \mathbb{R}^3$ são os ângulos das juntas, $\tilde{\boldsymbol{\theta}}$ são esses ângulos normalizados para $[-1, 1]$ em relação aos seus limites, $g \in [0, 1]$ é a abertura da garra, $\mathbf{p}$ e $\mathbf{c}$ são as posições $(x, y)$ da extremidade e do centro da caixa, e $b \in \{0, 1\}$ indica se a caixa está presa. A representação dos ângulos por seno e cosseno evita descontinuidades, e o vetor $\mathbf{c} - \mathbf{p}$ informa diretamente a direção até o objeto. A política recebe esses valores numéricos, e não a imagem renderizada.
+
+\subsubsection{Espaço de ações contínuo}
+
+A ação é um vetor contínuo $a_t \in [-1, 1]^4$. As três primeiras componentes definem a variação angular das juntas e a quarta, a variação da abertura da garra:
+
+\begin{equation}
+    \theta_i \leftarrow \text{clip}\big(\theta_i + a_{t,i}\,\Delta\theta_{\max},\; \theta_{\min,i},\; \theta_{\max,i}\big),
+    \qquad
+    g \leftarrow \text{clip}\big(g + a_{t,4}\,\Delta g_{\max},\; 0,\; 1\big)
+    \label{eq:acao}
+\end{equation}
+
+\noindent com $\Delta\theta_{\max} = 4^\circ$ e $\Delta g_{\max} = 0{,}2$ por passo. A saturação da Equação~\ref{eq:acao} implementa os limites mecânicos da Tabela~\ref{tab:juntas}. No PPO, a política $\pi_\theta(a_t \mid s_t)$ é uma distribuição normal multivariada diagonal, cuja média é produzida pela rede do ator e cujo desvio-padrão é um parâmetro treinável independente do estado. Durante o treinamento, as ações são amostradas dessa distribuição, o que garante a exploração; na avaliação, utiliza-se apenas a média.
+
+\subsubsection{Função de recompensa}
+
+Utilizou-se uma recompensa moldada em etapas:
+
+\begin{equation}
+    r_t =
+    \begin{cases}
+        -1 - d_t, & \text{se a caixa não está presa} \\
+        -(h^{*} - h_t), & \text{se a caixa está presa}
+    \end{cases}
+    \; + \; 2\,\mathbb{1}_{\text{pega}} \; + \; 10\,\mathbb{1}_{\text{sucesso}} \; - \; 0{,}01\,\lVert a_t \rVert^2 \; - \; 0{,}5\,\mathbb{1}_{\text{chão}}
+    \label{eq:recompensa}
+\end{equation}
+
+\noindent em que $d_t = \lVert \mathbf{c} - \mathbf{p} \rVert$ é a distância entre a extremidade e a caixa, $h_t$ é a altura da caixa em relação ao chão, $h^{*} = 0{,}40$~m é a altura-alvo, $\mathbb{1}_{\text{pega}}$ vale 1 apenas na primeira vez em que a caixa é agarrada no episódio, $\mathbb{1}_{\text{sucesso}}$ vale 1 quando a caixa presa atinge $h^{*}$ e $\mathbb{1}_{\text{chão}}$ vale 1 quando alguma junta fica abaixo do chão. Como a recompensa por passo é negativa até o sucesso, o agente é incentivado a concluir a tarefa rapidamente. Além disso, qualquer estado com a caixa presa (recompensa entre $-0{,}4$ e $0$) é melhor que qualquer estado sem ela (no máximo $-1$), o que torna a preensão sempre vantajosa. O bônus de preensão é concedido uma única vez, para evitar que o agente aprenda a pegar e soltar a caixa repetidamente.
+
+\subsubsection{Episódios}
+
+Cada episódio começa com o braço na postura $(90^\circ, -60^\circ, -60^\circ)$, a garra aberta e a caixa em posição sorteada. O episódio termina com sucesso quando a caixa presa atinge a altura $h^{*}$, ou é interrompido (truncado) após 250 passos.
+
+\subsection{Arquitetura das redes}
+
+O PPO utiliza a arquitetura ator-crítico, com duas redes neurais independentes do tipo \textit{perceptron} multicamadas, ambas recebendo o estado $s_t$ de 17 dimensões e com duas camadas ocultas de 128 neurônios e ativação tangente hiperbólica:
+
+\begin{itemize}
+    \item \textbf{Ator} ($\pi_\theta$): produz a média das 4 componentes da ação; o logaritmo do desvio-padrão é um vetor de 4 parâmetros treináveis;
+    \item \textbf{Crítico} ($V_\phi$): produz uma única saída, a estimativa do valor do estado $V_\phi(s_t)$, usada no cálculo da vantagem.
+\end{itemize}
+
+A vantagem $\hat{A}_t$ da Equação~\ref{eq:policy_gradient} é estimada pelo método \textit{Generalized Advantage Estimation} (GAE) (SCHULMAN et al., 2015):
+
+\begin{equation}
+    \delta_t = r_t + \gamma V_\phi(s_{t+1}) - V_\phi(s_t), \qquad
+    \hat{A}_t = \sum_{l=0}^{\infty} (\gamma\lambda)^l \, \delta_{t+l}
+    \label{eq:gae}
+\end{equation}
+
+\noindent em que $\gamma$ é o fator de desconto e $\lambda$ controla o compromisso entre viés e variância da estimativa. O crítico é treinado minimizando o erro quadrático entre $V_\phi(s_t)$ e o retorno observado $\hat{R}_t = \hat{A}_t + V_\phi(s_t)$, e a função otimizada combina os dois termos:
+
+\begin{equation}
+    L(\theta, \phi) = \hat{\mathbb{E}}_t \left[ L^{\text{CLIP}}_t(\theta) - c_1 \big( V_\phi(s_t) - \hat{R}_t \big)^2 + c_2 \, S[\pi_\theta](s_t) \right]
+    \label{eq:ppo_total}
+\end{equation}
+
+\noindent onde $S$ é a entropia da política, $c_1 = 0{,}5$ e $c_2 = 0$ (sem bônus de entropia).
+
+\subsection{Hiperparâmetros}
+
+Foi utilizada a implementação do PPO da biblioteca Stable-Baselines3 (RAFFIN et al., 2021), com redes em PyTorch e otimizador Adam. Os hiperparâmetros estão na Tabela~\ref{tab:ppo}.
+
+\begin{table}[htb]
+    \centering
+    \caption{Hiperparâmetros do PPO}
+    \label{tab:ppo}
+    \begin{tabular}{lc}
+        \hline
+        Parâmetro & Valor \\
+        \hline
+        Taxa de aprendizado                     & $3 \times 10^{-4}$ \\
+        Fator de desconto $\gamma$              & 0,99 \\
+        GAE $\lambda$                           & 0,95 \\
+        Recorte $\epsilon$                      & 0,2 \\
+        Ambientes em paralelo                   & 8 \\
+        Passos por ambiente em cada coleta      & 1.024 \\
+        Amostras por atualização                & 8.192 \\
+        Tamanho do minilote                     & 256 \\
+        Épocas por atualização                  & 10 \\
+        Coeficiente do crítico $c_1$            & 0,5 \\
+        Coeficiente de entropia $c_2$           & 0 \\
+        Norma máxima do gradiente               & 0,5 \\
+        Camadas ocultas (ator e crítico)        & $2 \times 128$, tanh \\
+        Total de passos de treinamento          & 1.000.000 \\
+        \hline
+    \end{tabular}
+\end{table}
+
+\subsection{Procedimento de treinamento}
+
+O treinamento segue um ciclo repetido até atingir o total de passos definido:
+
+\begin{enumerate}
+    \item \textbf{Coleta:} oito cópias independentes do ambiente, cada uma com uma posição de caixa sorteada, são executadas em paralelo com a política atual $\pi_{\theta_{\text{old}}}$ por 1.024 passos, totalizando 8.192 transições. Para cada uma, são armazenados o estado, a ação, a recompensa e a probabilidade da ação sob a política atual;
+    \item \textbf{Vantagem:} o crítico estima $V_\phi(s_t)$ para os estados coletados e as vantagens são calculadas pela Equação~\ref{eq:gae};
+    \item \textbf{Otimização:} por 10 épocas, as transições são embaralhadas e divididas em 32 minilotes de 256 amostras, e os parâmetros do ator e do crítico são atualizados pela Equação~\ref{eq:ppo_total}, com a razão $r_t(\theta)$ da Equação~\ref{eq:ratio} limitada ao intervalo $[0{,}8;\,1{,}2]$;
+    \item \textbf{Descarte:} as transições são descartadas, pois deixam de representar a política atualizada, e um novo ciclo de coleta é iniciado.
+\end{enumerate}
+
+A cada 10.000 passos, o agente é avaliado em 20 episódios em um ambiente separado, usando a ação média (política determinística), e são registrados o retorno médio e a taxa de sucesso. O modelo com maior retorno médio nessas avaliações é salvo. Neste trabalho foi utilizada uma semente aleatória (semente 0). Na máquina utilizada, o PPO processou aproximadamente 2.000 passos por segundo, sem renderização. Ao final, o melhor modelo é avaliado em 100 episódios, com posições de caixa definidas pelas sementes 1000 a 1099, e visualizado em OpenGL.

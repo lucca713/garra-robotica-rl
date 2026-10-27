@@ -1,0 +1,40 @@
+# Ambientes virtuais do Python
+venv/
+.venv/
+env/
+ENV/
+
+# Arquivos gerados pelo Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ipynb_checkpoints/
+
+# Editores e sistema
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# Logs do TensorBoard (pasta logs/ criada pelo treinar.py)
+logs/
+events.out.tfevents.*
+
+# Modelos treinados e checkpoints (pesados; podem ser gerados de novo com treinar.py)
+# Os evaluations.npz continuam no repositório porque o graficos.py usa eles.
+modelos/**/*.zip
+*.pt
+*.pth
+*.ckpt
+
+# Arquivos auxiliares do LaTeX
+*.aux
+*.bbl
+*.blg
+*.fdb_latexmk
+*.fls
+*.synctex.gz
+*.toc
+*.out

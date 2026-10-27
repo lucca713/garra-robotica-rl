@@ -1,0 +1,65 @@
+VALORES REAIS DO CÓDIGO PARA PREENCHER OS [a completar] DO TEXTO DO PPO
+(lidos de ambiente.py e treinar.py em 01/10/2026; código não alterado)
+
+AMBIENTE / BRAÇO
+- Pedestal: 0,10 m. Segmentos: ombro 0,50 m, cotovelo 0,40 m, punho 0,20 m.
+- Todas as juntas giram no eixo Z (braço move-se num plano vertical).
+- Ângulos relativos ao segmento anterior (ombro relativo ao chão):
+    ombro    10° a 170°
+    cotovelo -150° a 150°
+    punho    -120° a 120°
+- Postura inicial: (90°, -60°, -60°), garra aberta (1,0).
+- Caixa: cubo de 0,08 m, no chão, x sorteado uniforme em [0,35; 0,85] m.
+- Preensão: garra < 0,3 E distância ponta-caixa < 0,05 m -> caixa presa.
+  Solta se garra > 0,5; caixa solta cai 0,02 m por passo.
+
+OBSERVAÇÃO (dimensão 17)
+  sen(θ1..3) [3], cos(θ1..3) [3], θ normalizados em [-1,1] pelos limites [3],
+  abertura da garra g [1], posição da ponta (x,y) [2], posição da caixa (x,y) [2],
+  vetor caixa - ponta [2], segurando (0/1) [1].
+
+AÇÃO (contínua, dimensão 4, cada valor em [-1, 1])
+  a1..a3: Δθ_i = a_i · 4° por passo, depois clip nos limites da junta.
+  a4:     Δg = a4 · 0,2 por passo, g limitado a [0, 1].
+
+RECOMPENSA (por passo)
+  r = -1 - d                 se a caixa NÃO está presa (d = distância ponta-caixa, m)
+  r = -(0,40 - h)            se a caixa está presa (h = altura da caixa acima do chão, m)
+    + 2    na primeira preensão do episódio (só uma vez)
+    + 10   no sucesso
+    - 0,01 · ||a||²
+    - 0,5  se alguma junta ficar abaixo do chão (y < 0)
+  (Variante de controle "esparsa": +10 no sucesso, 0 no resto.)
+
+FIM DE EPISÓDIO
+  Termina (sucesso) quando a caixa presa atinge h >= 0,40 m.
+  Truncado em 250 passos.
+
+REDES (Stable-Baselines3 PPO, "MlpPolicy")
+  Ator e crítico separados, cada um 2 camadas ocultas de 128, ativação tanh.
+  Ator: média das 4 ações; log do desvio-padrão = 4 parâmetros treináveis
+  (independentes do estado). Crítico: 1 saída V(s). Otimizador Adam.
+
+HIPERPARÂMETROS DO PPO
+  learning_rate   3e-4
+  n_envs          8 (ambientes paralelos)
+  n_steps         1024 por ambiente  (8192 transições por atualização)
+  batch_size      256  (32 minilotes por época)
+  n_epochs        10
+  gamma           0,99
+  gae_lambda      0,95
+  clip_range      0,2
+  ent_coef        0,0
+  vf_coef         0,5   (padrão da biblioteca)
+  max_grad_norm   0,5   (padrão da biblioteca)
+  total de passos 1.000.000
+  seed            0  (uma semente rodada até agora)
+  Avaliação durante o treino: a cada 10.000 passos, 20 episódios determinísticos.
+
+RESULTADOS JÁ OBTIDOS (seed 0)
+  PPO: 1º 100% de sucesso nas avaliações com 110.000 passos (40% com 100.000);
+       avaliação final 100% em 100 episódios, 15,1 passos médios, retorno -1,14 ± 1,23.
+  SAC (300.000 passos): 1º 100% com 20.000 passos; final 100% em 100 episódios,
+       15,3 passos médios, retorno -1,17 ± 1,29.
+
+Texto LaTeX completo já pronto com esses valores: metodologia_ppo.tex

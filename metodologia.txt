@@ -1,0 +1,248 @@
+=====================================================================
+CAPÍTULO DE METODOLOGIA (texto pronto, com os valores REAIS do código)
+=====================================================================
+Todos os números abaixo foram tirados do código que está nesta pasta
+(ambiente.py, render.py, treinar.py). Se você mudar o código, atualize
+aqui também. Trechos entre [ ] são para você completar.
+Pode colar no lugar da seção de metodologia do artigo que está na Área de
+Trabalho (lá ela é a seção 4); ajuste a numeração se precisar.
+
+
+4 METODOLOGIA
+
+Este trabalho seguiu uma abordagem experimental em três etapas: (i)
+construção de um ambiente de simulação de um braço robótico com garra;
+(ii) renderização tridimensional desse ambiente com OpenGL; e (iii)
+treinamento e comparação de dois algoritmos de Aprendizado por Reforço
+Profundo com ações contínuas, o Proximal Policy Optimization (PPO) e o
+Soft Actor-Critic (SAC). Para avaliar o papel da função de recompensa,
+foi realizado ainda um experimento de controle com recompensa esparsa.
+
+4.1 Ferramentas e ambiente computacional
+
+O sistema foi implementado em Python 3.14.8. A simulação segue a
+interface da biblioteca Gymnasium 1.3.0 (TOWERS et al., 2024), os
+algoritmos foram os da biblioteca Stable-Baselines3 2.9.0 (RAFFIN et
+al., 2021), com redes neurais em PyTorch 2.14.1, e a renderização usou
+PyOpenGL 3.1.10 com a biblioteca GLFW 2.10.2 para criação de janela e
+leitura do teclado. Os gráficos foram gerados com Matplotlib 3.11.2 e as
+animações com a biblioteca Pillow. Os experimentos foram executados em um
+computador com processador Intel Core i5-12400F, 32 GB de memória RAM e
+placa de vídeo NVIDIA GeForce RTX 5060 Ti, utilizada apenas para a
+renderização; o treinamento das redes neurais foi feito na CPU.
+
+O código foi organizado em módulos independentes: ambiente.py
+(simulação e recompensa), render.py (desenho em OpenGL), treinar.py
+(treinamento), avaliar.py (avaliação), gravar.py (gravação de vídeos) e
+graficos.py (curvas de aprendizado). A separação entre simulação e
+renderização permite treinar sem abrir janela, o que acelera o
+processo, e ativar a visualização apenas para acompanhar e avaliar o
+agente.
+
+4.2 Modelo do braço robótico
+
+O braço possui três segmentos rígidos ligados por três juntas rotacionais
+(ombro, cotovelo e punho) e uma garra de dois dedos na extremidade. O
+braço está montado sobre um pedestal de 0,10 m de altura. Todas as
+juntas giram em torno do mesmo eixo (eixo Z), de modo que o braço se
+movimenta em um plano vertical, embora seja desenhado em três dimensões.
+
+Tabela 1 - Parâmetros do braço
+  Junta      Comprimento do segmento   Ângulo mínimo   Ângulo máximo
+  Ombro      0,50 m                    10°             170°
+  Cotovelo   0,40 m                    -150°           150°
+  Punho      0,20 m                    -120°           120°
+  Garra      abertura normalizada entre 0 (fechada) e 1 (aberta)
+
+O ângulo do ombro é medido em relação ao chão, e os demais em relação ao
+segmento anterior. A postura inicial é (90°, -60°, -60°). Nenhuma junta
+realiza rotação completa: após cada ação, o ângulo é saturado nos seus
+limites, conforme a Equação 1, reproduzindo as restrições mecânicas de
+um braço real.
+
+    theta_i <- clip(theta_i + delta_i, theta_min_i, theta_max_i)   (1)
+
+A posição de cada junta é obtida por cinemática direta. Sendo
+phi_i = theta_1 + ... + theta_i o ângulo acumulado, a posição da
+extremidade é:
+
+    x = soma_i L_i cos(phi_i)
+    y = h_base + soma_i L_i sin(phi_i)                              (2)
+
+4.3 Objeto, preensão e dinâmica simplificada
+
+O objeto a ser manipulado é uma caixa cúbica de 0,08 m de aresta. No
+início de cada episódio, ela é posicionada no chão com a coordenada x
+sorteada uniformemente entre 0,35 m e 0,85 m, dentro da área alcançável
+pelo braço. O sorteio impede que o agente memorize uma única posição.
+
+Foi adotado um modelo de preensão simplificado, sem simulação de atrito
+ou forças de contato: a caixa é considerada presa quando a garra está
+fechada (abertura menor que 0,3) e a extremidade do braço está a menos de
+0,05 m do centro da caixa. Enquanto presa, a caixa acompanha a
+extremidade. Se a garra for aberta (abertura maior que 0,5), a caixa é
+solta e cai 0,02 m por passo até o chão. A tarefa é considerada
+concluída com sucesso quando a caixa, presa à garra, é elevada 0,40 m
+acima do chão.
+
+4.4 Formulação como problema de Aprendizado por Reforço
+
+A tarefa foi modelada como um Processo de Decisão de Markov, em que a
+cada passo o agente observa o estado, escolhe uma ação e recebe uma
+recompensa.
+
+Espaço de observação. Vetor de 17 números reais: seno e cosseno dos três
+ângulos (6 valores), os três ângulos normalizados no intervalo [-1, 1]
+em relação aos seus limites (3), a abertura da garra (1), a posição
+(x, y) da extremidade (2), a posição (x, y) da caixa (2), o vetor entre
+a caixa e a extremidade (2) e um indicador de caixa presa (1). O uso de
+seno e cosseno evita descontinuidades na representação dos ângulos. O
+agente recebe esses valores diretamente, e não a imagem renderizada.
+
+Espaço de ações. Vetor contínuo de 4 componentes no intervalo [-1, 1].
+Os três primeiros são convertidos em variações de ângulo de até 4° por
+passo (delta_i = a_i x 4°), e o quarto altera a abertura da garra em até
+0,2 por passo. A normalização em [-1, 1] é a escala recomendada para
+políticas Gaussianas como as do PPO e do SAC.
+
+Episódios. Cada episódio termina com sucesso ou é interrompido após 250
+passos.
+
+4.5 Função de recompensa
+
+Foi utilizada uma recompensa moldada em etapas (reward shaping), que
+orienta o agente ao longo da tarefa:
+
+    r_t = -1 - d_t                     se a caixa não está presa
+    r_t = -(0,40 - h_t)                se a caixa está presa
+          + 2    na primeira vez que a caixa é agarrada no episódio
+          + 10   quando a caixa atinge 0,40 m (sucesso)
+          - 0,01 ||a_t||^2               (penaliza movimentos bruscos)
+          - 0,5  se alguma junta ficar abaixo do chão
+
+em que d_t é a distância entre a extremidade e a caixa e h_t é a altura
+da caixa em relação ao chão. A recompensa por passo é sempre negativa
+antes do sucesso, o que incentiva o agente a concluir a tarefa no menor
+tempo possível. Além disso, qualquer situação com a caixa presa (entre
+-0,4 e 0) vale mais do que qualquer situação sem a caixa (no máximo -1),
+de modo que agarrar é sempre vantajoso, e o bônus de preensão é pago uma
+única vez para evitar que o agente aprenda a pegar e soltar
+repetidamente.
+
+Experimento de controle (recompensa esparsa). Para medir a importância da
+recompensa moldada, o SAC também foi treinado com uma recompensa
+esparsa, que vale +10 no sucesso e 0 em qualquer outro passo, sem
+nenhuma indicação intermediária.
+
+4.6 Renderização com OpenGL
+
+A cena é desenhada com o pipeline clássico do OpenGL em uma janela de
+960 x 680 pixels. Todas as peças são construídas a partir de duas
+primitivas: um cubo unitário, que é escalado para formar o pedestal, os
+segmentos, a palma e os dedos da garra, a caixa e o chão, e esferas
+(gluSphere) que representam as juntas.
+
+O braço é desenhado por modelagem hierárquica com a pilha de matrizes
+(glPushMatrix e glPopMatrix). Para cada junta, aplica-se uma rotação
+glRotatef pelo ângulo da junta em torno do eixo Z, desenha-se o
+segmento e aplica-se uma translação glTranslatef igual ao seu
+comprimento, levando o sistema de coordenadas até a junta seguinte.
+Assim, a transformação de cada segmento é o produto das transformações
+de todos os anteriores, e a rotação do ombro movimenta todo o restante
+do braço, como ocorre em um braço real. Os dedos da garra são deslocados
+lateralmente de acordo com a abertura, e a caixa muda de cor quando está
+presa.
+
+A projeção é em perspectiva (gluPerspective, campo de visão de 45°), e a
+câmera orbita a cena por meio de gluLookAt, podendo ser girada e
+aproximada pelo teclado. A cena usa iluminação com uma fonte de luz
+pontual (GL_LIGHT0) com componentes ambiente e difusa, sombreamento
+suave e teste de profundidade (Z-buffer). O chão recebe uma grade de
+linhas para dar referência de profundidade, e uma linha verde indica a
+altura-alvo.
+
+Durante o treinamento, a renderização fica desativada. Ela é usada em
+três situações: no controle manual pelo teclado, usado para validar a
+simulação; na visualização do agente treinado; e na gravação de
+animações, em que cada quadro é lido do framebuffer com glReadPixels e
+salvo em um GIF.
+
+4.7 Algoritmos e hiperparâmetros
+
+Foram comparados o PPO (SCHULMAN et al., 2017), um algoritmo on-policy
+que limita a variação da política a cada atualização pelo recorte
+(clipping) da razão de probabilidades, e o SAC (HAARNOJA et al., 2018),
+um algoritmo off-policy de máxima entropia que reutiliza experiências
+armazenadas em um replay buffer. Os hiperparâmetros usados estão na
+Tabela 2.
+
+Tabela 2 - Hiperparâmetros
+  Parâmetro                        PPO               SAC
+  Taxa de aprendizado              3 x 10^-4         3 x 10^-4
+  Fator de desconto (gamma)        0,99              0,99
+  Rede neural (ator e crítico)     2 camadas de 128  2 camadas de 256
+  Ambientes em paralelo            8                 1
+  Passos por coleta (por ambiente) 1024              -
+  Épocas por atualização           10                -
+  Tamanho do lote                  256               256
+  Recorte (clip) epsilon           0,2               -
+  GAE lambda                       0,95              -
+  Coeficiente de entropia          0                 automático
+  Tamanho do replay buffer         -                 1.000.000
+  Passos iniciais aleatórios       -                 5.000
+  tau (redes-alvo)                 -                 0,005
+  Total de passos de treino        [1.000.000]       [300.000]
+
+O PPO recebeu mais passos de treino porque, por descartar as
+experiências após cada atualização, necessita de mais interações com o
+ambiente; em contrapartida, cada passo é mais barato. Na máquina
+utilizada, o PPO processou cerca de 2.000 passos por segundo e o SAC
+cerca de 180. [CONFERIR com o tempo total dos seus treinos]
+
+Cada configuração foi treinada com [COMPLETAR: número] sementes
+aleatórias diferentes (0, 1, [...]), para que os resultados não
+dependam de uma única execução.
+
+4.8 Protocolo de avaliação
+
+Durante o treinamento, a cada 10.000 passos do ambiente, o agente foi
+avaliado em 20 episódios com a política determinística (usando a média
+da distribuição de ações, sem ruído de exploração). Nessas avaliações
+foram registrados o retorno médio e a taxa de sucesso, e o modelo com
+melhor retorno foi salvo. Ao final, o melhor modelo de cada execução foi
+avaliado em [COMPLETAR: 100] episódios com posições de caixa definidas
+por sementes fixas (1000 a [1099]), iguais para todos os algoritmos.
+
+Métricas:
+  a) taxa de sucesso: porcentagem de episódios em que a caixa atingiu a
+     altura-alvo;
+  b) retorno médio por episódio;
+  c) número médio de passos até o sucesso;
+  d) passos de treinamento necessários para atingir 90% de sucesso nas
+     avaliações periódicas (eficiência de amostras);
+  e) tempo total de treinamento.
+
+Os resultados são apresentados como média e desvio-padrão entre as
+sementes, em curvas de aprendizado (retorno e taxa de sucesso em função
+dos passos de treino). Para a análise qualitativa, foram gravadas
+animações do agente sem treino (ações aleatórias), do agente treinado
+com recompensa esparsa e do agente treinado com recompensa em etapas,
+todas com as mesmas posições de caixa.
+
+
+---------------------------------------------------------------------
+REFERÊNCIAS USADAS NESTE CAPÍTULO (confira se já estão na lista)
+---------------------------------------------------------------------
+HAARNOJA, T. et al. Soft Actor-Critic: Off-Policy Maximum Entropy Deep
+Reinforcement Learning with a Stochastic Actor. In: INTERNATIONAL
+CONFERENCE ON MACHINE LEARNING, 35., 2018. Proceedings [...]. PMLR, 2018.
+
+RAFFIN, A. et al. Stable-Baselines3: Reliable Reinforcement Learning
+Implementations. Journal of Machine Learning Research, v. 22, n. 268,
+p. 1-8, 2021.
+
+SCHULMAN, J. et al. Proximal Policy Optimization Algorithms. arXiv
+preprint arXiv:1707.06347, 2017.
+
+TOWERS, M. et al. Gymnasium: A Standard Interface for Reinforcement
+Learning Environments. arXiv preprint arXiv:2407.17032, 2024.

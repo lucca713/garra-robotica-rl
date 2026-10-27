@@ -1,0 +1,369 @@
+=====================================================================
+AULA: COMO FUNCIONAM O PPO E O SAC
+(usando o seu braço robótico como exemplo)
+=====================================================================
+
+Roteiro
+  Parte 1 - A base: aprendizado por reforço
+  Parte 2 - Ator e crítico: as duas redes neurais
+  Parte 3 - PPO passo a passo
+  Parte 4 - SAC passo a passo
+  Parte 5 - PPO x SAC lado a lado
+  Parte 6 - Exercícios práticos com o seu código
+  Parte 7 - Glossário
+  Parte 8 - O que ler (em ordem)
+
+
+---------------------------------------------------------------------
+PARTE 1 - A BASE: APRENDIZADO POR REFORÇO
+---------------------------------------------------------------------
+
+1.1 O ciclo
+-----------
+Existe um AGENTE (o "cérebro") e um AMBIENTE (o mundo). No seu projeto:
+  agente   = a rede neural treinada pelo PPO ou pelo SAC
+  ambiente = ambiente.py (braço, garra, caixa, chão)
+
+A cada passo t:
+  1. o agente olha o ESTADO s_t        (os 17 números da observação)
+  2. escolhe uma AÇÃO a_t              (4 números entre -1 e 1)
+  3. o ambiente devolve a RECOMPENSA r_t e o próximo estado s_{t+1}
+
+Um EPISÓDIO é uma tentativa completa: do reset() até pegar a caixa
+(sucesso) ou até acabar o tempo (250 passos).
+
+1.2 O objetivo: o retorno
+-------------------------
+O agente não quer a maior recompensa AGORA, e sim a maior soma de
+recompensas ao longo do episódio. Essa soma é o RETORNO:
+
+    G_t = r_t + gamma*r_{t+1} + gamma^2*r_{t+2} + ...
+
+gamma (fator de desconto, usamos 0,99) faz recompensas distantes valerem
+um pouco menos. Por que isso importa no braço? Fechar a garra perto da
+caixa não dá recompensa grande na hora, mas abre caminho para a
+recompensa de levantar depois. O retorno "enxerga" esse futuro.
+
+1.3 Política
+------------
+A POLÍTICA pi(a|s) é a regra de decisão: "neste estado, faça esta ação".
+Em ações contínuas, a política não escolhe de uma lista. Ela produz uma
+distribuição Gaussiana (curva de sino) para cada junta:
+
+    média  = "o giro que eu acho melhor"
+    desvio = "o quanto eu ainda estou em dúvida"
+
+No treino, a ação é SORTEADA dessa curva (isso é explorar). No teste
+(avaliar.py, deterministic=True), usa-se só a média.
+
+1.4 Funções de valor
+--------------------
+  V(s)   = retorno esperado a partir do estado s
+           "quão boa é esta situação?"
+  Q(s,a) = retorno esperado se eu fizer a ação a no estado s
+           "quão boa é esta ação nesta situação?"
+  A(s,a) = Q(s,a) - V(s)  -> VANTAGEM
+           "esta ação foi melhor ou pior do que o normal aqui?"
+
+Exemplo no braço: a garra está a 3 cm da caixa, aberta.
+  V(s) é razoavelmente alto (está perto de conseguir).
+  Q(s, "fechar a garra") é mais alto que V(s): vantagem positiva.
+  Q(s, "subir o ombro") é mais baixo: vantagem negativa.
+
+1.5 A equação de Bellman (a ideia mais importante do RL)
+-------------------------------------------------------
+    Q(s,a) = r + gamma * V(s')
+
+"O valor de agir agora = o que eu ganho agora + o valor de onde eu vou
+parar." Isso permite aprender valores olhando só UM passo à frente, em
+vez de esperar o episódio inteiro acabar. O SAC usa isso diretamente.
+
+
+---------------------------------------------------------------------
+PARTE 2 - ATOR E CRÍTICO
+---------------------------------------------------------------------
+Os dois algoritmos são do tipo ATOR-CRÍTICO:
+
+  ATOR    = rede neural da política. Entrada: estado. Saída: média e
+            desvio de cada ação.
+  CRÍTICO = rede neural de valor. Entrada: estado (PPO) ou estado+ação
+            (SAC). Saída: um número (a "nota").
+
+Analogia: o ator é um aluno fazendo a prova, o crítico é o professor
+que corrige. No começo os dois são ruins. O professor aprende a
+corrigir comparando as notas que deu com o que realmente aconteceu
+(recompensas). O aluno aprende ouvindo o professor. Os dois melhoram
+juntos.
+
+Como o ator aprende (gradiente de política):
+    aumentar a probabilidade das ações com vantagem > 0
+    diminuir a probabilidade das ações com vantagem < 0
+
+Matematicamente:  gradiente = E[ grad log pi(a|s) * A(s,a) ]
+"log pi" é o log da probabilidade da ação; o gradiente empurra essa
+probabilidade para cima ou para baixo, proporcional à vantagem.
+
+O problema desse método "puro": se um lote de dados for enganoso, um
+passo grande de atualização estraga a política e o agente desaprende.
+O PPO e o SAC são duas soluções diferentes para isso.
+
+
+---------------------------------------------------------------------
+PARTE 3 - PPO (Proximal Policy Optimization, Schulman et al., 2017)
+---------------------------------------------------------------------
+
+3.1 A ideia em uma frase
+------------------------
+"Aprenda com o que você acabou de fazer, mas nunca mude demais de uma
+vez."
+
+3.2 On-policy
+-------------
+O PPO só aprende com dados gerados pela política ATUAL. Depois de
+usados, os dados são jogados fora, porque a política mudou e aqueles
+dados "envelheceram". Por isso ele precisa de muitas interações, e por
+isso usamos 8 ambientes em paralelo em treinar.py.
+
+3.3 O ciclo, passo a passo (valores do seu treinar.py)
+------------------------------------------------------
+  REPITA:
+    1. COLETA: os 8 braços jogam 1024 passos cada um com a política
+       atual = 8192 experiências. Guarda estado, ação, recompensa e a
+       probabilidade que a política deu para aquela ação (pi_antiga).
+
+    2. VANTAGEM (GAE): para cada passo, calcula a vantagem A_t. O GAE
+       (Generalized Advantage Estimation, lambda = 0,95) mistura olhar
+       1 passo à frente (pouca variância, mais viés) com olhar o
+       episódio todo (sem viés, muita variância).
+
+    3. ATUALIZAÇÃO: por 10 épocas, em lotes de 256:
+         razão  r_t = pi_nova(a|s) / pi_antiga(a|s)
+         r_t = 1   -> a política não mudou para essa ação
+         r_t = 1,5 -> a ação ficou 50% mais provável
+
+         objetivo = min( r_t * A_t ,  clip(r_t, 0,8, 1,2) * A_t )
+
+       Tradução: se a ação foi boa (A > 0), pode aumentar a chance dela
+       até +20% e não mais que isso. Se foi ruim (A < 0), pode diminuir
+       até -20%. Passou disso, o gradiente zera: "já mudou o suficiente
+       por hoje". Esse é o CLIP (clip_range = 0,2).
+
+       Ao mesmo tempo o crítico é treinado para prever o retorno real
+       (erro quadrático entre V(s) e o retorno observado).
+
+    4. Descarta os dados e volta ao passo 1.
+
+3.4 Por que "Proximal"?
+-----------------------
+Porque a nova política fica PRÓXIMA da antiga. O antecessor do PPO, o
+TRPO (2015), fazia isso com uma restrição matemática complicada
+(divergência KL). O PPO consegue quase o mesmo efeito só com o "clip",
+que é uma linha de código. Por isso ficou tão popular.
+
+3.5 Pontos fortes e fracos
+--------------------------
+  + estável, poucos hiperparâmetros sensíveis
+  + cada passo é barato; paraleliza bem
+  - desperdiça dados (on-policy): precisa de milhões de passos
+  - explora só pelo desvio da Gaussiana, que vai encolhendo
+
+
+---------------------------------------------------------------------
+PARTE 4 - SAC (Soft Actor-Critic, Haarnoja et al., 2018)
+---------------------------------------------------------------------
+
+4.1 A ideia em uma frase
+------------------------
+"Guarde tudo o que já viveu, reaprenda com isso o tempo todo e continue
+curioso."
+
+4.2 Off-policy e o replay buffer
+--------------------------------
+O SAC guarda cada experiência (s, a, r, s') numa memória, o REPLAY
+BUFFER (até 1 milhão no seu código). Ele pode aprender com experiências
+antigas, geradas por versões antigas da política. Isso é OFF-POLICY. Um
+mesmo momento em que o braço quase pegou a caixa pode ser reaproveitado
+centenas de vezes. Por isso ele precisa de bem menos passos que o PPO.
+
+4.3 Máxima entropia: o "soft"
+-----------------------------
+ENTROPIA mede o quanto a política é aleatória (curva de sino larga =
+entropia alta). O SAC maximiza:
+
+    recompensa + alpha * entropia
+
+Ou seja, ele é premiado por continuar variando as ações enquanto isso
+não custa muita recompensa. Efeitos:
+  - explora melhor (continua testando jeitos diferentes de pegar);
+  - não se prende cedo a uma estratégia medíocre;
+  - se houver dois jeitos igualmente bons, mantém os dois.
+alpha (temperatura) regula o quanto vale a curiosidade. Com
+ent_coef="auto", o próprio SAC ajusta alpha para manter a entropia
+perto de um alvo.
+
+4.4 O ciclo, passo a passo (valores do seu treinar.py)
+------------------------------------------------------
+  Primeiros 5000 passos: ações aleatórias só para encher o buffer
+  (learning_starts).
+
+  A CADA PASSO do ambiente:
+    1. Sorteia uma ação da política, executa, guarda (s,a,r,s') no
+       buffer.
+    2. Sorteia 256 experiências aleatórias do buffer.
+    3. TREINA OS DOIS CRÍTICOS Q1 e Q2 (Bellman "soft"):
+         alvo = r + gamma * ( min(Q1_alvo, Q2_alvo)(s',a') - alpha*log pi(a'|s') )
+       onde a' é uma ação sorteada da política no estado s'.
+       - "min" dos dois críticos: um crítico sozinho tende a
+         superestimar (fica otimista demais). Usar o menor corrige isso
+         (truque vindo do TD3).
+       - "- alpha*log pi" é o bônus de entropia entrando no valor.
+    4. TREINA O ATOR para escolher ações com Q alto E entropia alta:
+         minimizar  alpha*log pi(a|s) - min(Q1,Q2)(s,a)
+       O ator usa o "reparametrization trick": a ação é
+       média + desvio * ruído, o que permite passar o gradiente do
+       crítico direto para o ator.
+    5. AJUSTA alpha (se "auto").
+    6. REDES-ALVO: cópias dos críticos que andam devagar
+         alvo = 0,995*alvo + 0,005*crítico   (tau = 0,005)
+       Isso evita que o crítico "persiga o próprio rabo".
+
+  As ações passam por tanh, então ficam sempre em [-1, 1], que é
+  exatamente o action_space do seu ambiente.
+
+4.5 Pontos fortes e fracos
+--------------------------
+  + muito eficiente em dados; referência em robótica contínua
+  + explora bem sozinho
+  - cada passo é caro (várias redes treinando a cada passo)
+  - usa mais memória; não paraleliza tão fácil
+
+
+---------------------------------------------------------------------
+PARTE 5 - PPO x SAC LADO A LADO
+---------------------------------------------------------------------
+                       PPO                      SAC
+  Tipo                 on-policy                off-policy
+  Reaproveita dados?   não (descarta)           sim (replay buffer)
+  Crítico              V(s), 1 rede             Q(s,a), 2 redes + alvos
+  Estabilidade vem de  clip na razão            min dos 2 Q + redes-alvo
+  Exploração           desvio da Gaussiana      bônus de entropia (alpha)
+  Passos necessários   muitos (~1 milhão)       menos (~300 mil)
+  Custo por passo      baixo                    alto
+  No seu PC (medido)   ~2000 passos/s           ~180 passos/s
+  Paralelismo          8 ambientes              1 ambiente
+
+Hipótese para o artigo (a CONFIRMAR com seus experimentos): o SAC chega
+a uma boa taxa de sucesso com menos passos; o PPO chega mais rápido em
+tempo de relógio.
+
+
+---------------------------------------------------------------------
+PARTE 6 - EXERCÍCIOS COM O SEU CÓDIGO
+---------------------------------------------------------------------
+Fazer isso ensina mais do que ler. Rode cada um e compare com
+graficos.py.
+
+ 1. Recompensa esparsa: em ambiente.py, troque a recompensa para dar
+    só +10 no sucesso e 0 no resto. Treine o SAC. Ele aprende? (Quase
+    nunca: é o problema da exploração com recompensa esparsa. Bom
+    parágrafo para o artigo.)
+ 2. Clip do PPO: em treinar.py, teste clip_range=0.05 e 0.5. Qual fica
+    lento e qual fica instável?
+ 3. Sem entropia no SAC: troque ent_coef="auto" por ent_coef=0.0.
+    Explora pior?
+ 4. Menos paralelismo: rode o PPO com --n-envs 1. Quanto piora?
+ 5. Sementes: rode 3 sementes de cada algoritmo e veja a faixa de
+    desvio no gráfico. Isso mostra por que uma única execução não prova
+    nada.
+
+
+---------------------------------------------------------------------
+PARTE 7 - GLOSSÁRIO RÁPIDO
+---------------------------------------------------------------------
+  Agente          quem decide (a rede neural)
+  Ambiente        o mundo simulado (ambiente.py)
+  Estado/Observação  números que descrevem a situação
+  Ação            o que o agente faz (giros e garra)
+  Recompensa      nota imediata de cada passo
+  Retorno         soma (descontada) das recompensas futuras
+  gamma           fator de desconto (0,99)
+  Política pi     regra de decisão estado -> ação
+  V(s), Q(s,a)    funções de valor
+  Vantagem A      quanto a ação foi melhor que a média
+  On-policy       aprende só com dados da política atual (PPO)
+  Off-policy      aprende com dados antigos também (SAC)
+  Replay buffer   memória de experiências do SAC
+  Entropia        grau de aleatoriedade da política
+  Clip            limite de mudança por atualização do PPO
+  GAE             jeito de estimar a vantagem (PPO)
+  Rede-alvo       cópia lenta do crítico (SAC)
+  Época           uma passada completa pelos dados coletados
+  Batch/lote      pedaço dos dados usado em cada atualização
+
+
+---------------------------------------------------------------------
+PARTE 8 - O QUE LER (em ordem sugerida)
+---------------------------------------------------------------------
+
+COMEÇAR POR AQUI (didático, gratuito)
+ 1. OpenAI Spinning Up - "Introduction to RL" (partes 1 a 3) e as
+    páginas de PPO e SAC.
+    https://spinningup.openai.com
+    -> a melhor ponte entre o básico e os artigos. Ler primeiro.
+ 2. Hugging Face Deep RL Course (gratuito, com exercícios; tem unidade
+    de PPO e de actor-critic).
+    https://huggingface.co/learn/deep-rl-course
+ 3. Lilian Weng - "Policy Gradient Algorithms" (blog, explica PPO, SAC
+    e vários outros com a matemática organizada).
+    https://lilianweng.github.io/posts/2018-04-08-policy-gradient/
+
+LIVRO BASE (citar no artigo)
+ 4. SUTTON, R. S.; BARTO, A. G. Reinforcement Learning: An Introduction.
+    2. ed. MIT Press, 2018. Gratuito em
+    http://incompleteideas.net/book/the-book-2nd.html
+    Capítulos mais úteis: 3 (MDP), 6 (TD/Bellman), 13 (gradiente de
+    política e ator-crítico).
+
+ARTIGOS ORIGINAIS DO PPO
+ 5. SCHULMAN, J. et al. Proximal Policy Optimization Algorithms.
+    arXiv:1707.06347, 2017.   https://arxiv.org/abs/1707.06347
+    -> curto (12 páginas). Foque nas seções 3 (clip) e 5 (algoritmo).
+ 6. SCHULMAN, J. et al. High-Dimensional Continuous Control Using
+    Generalized Advantage Estimation. arXiv:1506.02438, 2015.
+    https://arxiv.org/abs/1506.02438   (o GAE)
+ 7. SCHULMAN, J. et al. Trust Region Policy Optimization. ICML, 2015.
+    arXiv:1502.05477   (o antecessor; leitura opcional)
+ 8. HUANG, S. et al. The 37 Implementation Details of Proximal Policy
+    Optimization. ICLR Blog Track, 2022.
+    https://iclr-blog-track.github.io/2022/03/25/ppo-implementation-details/
+    -> mostra o que as bibliotecas fazem "por baixo" e não está no
+       artigo original.
+
+ARTIGOS ORIGINAIS DO SAC
+ 9. HAARNOJA, T. et al. Soft Actor-Critic: Off-Policy Maximum Entropy
+    Deep Reinforcement Learning with a Stochastic Actor. ICML, 2018.
+    arXiv:1801.01290   https://arxiv.org/abs/1801.01290
+10. HAARNOJA, T. et al. Soft Actor-Critic Algorithms and Applications.
+    arXiv:1812.05905, 2018.   https://arxiv.org/abs/1812.05905
+    -> versão com alpha automático (a que o Stable-Baselines3 usa) e
+       com testes em robôs reais.
+11. FUJIMOTO, S.; VAN HOOF, H.; MEGER, D. Addressing Function
+    Approximation Error in Actor-Critic Methods (TD3). ICML, 2018.
+    arXiv:1802.09477   -> de onde vem o truque dos dois críticos.
+
+COMPARAÇÕES E PRÁTICA
+12. ANDRYCHOWICZ, M. et al. What Matters in On-Policy Reinforcement
+    Learning? A Large-Scale Empirical Study. arXiv:2006.05990, 2020.
+    -> quais hiperparâmetros do PPO realmente importam.
+13. RAFFIN, A. et al. Stable-Baselines3: Reliable Reinforcement Learning
+    Implementations. JMLR, v. 22, n. 268, 2021.
+    Documentação: https://stable-baselines3.readthedocs.io
+    -> a biblioteca que você está usando; citar no artigo.
+
+VÍDEOS
+14. David Silver - curso de RL da UCL/DeepMind (10 aulas, YouTube).
+    Aulas 1, 2 e 7 cobrem a base e o gradiente de política.
+
+Dica de leitura dos artigos: leia resumo, introdução, a figura/algoritmo
+principal e a conclusão primeiro. Só depois volte à matemática, com a
+Parte 3 e a Parte 4 desta aula ao lado.

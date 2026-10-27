@@ -1,0 +1,9 @@
+numpy
+gymnasium
+stable-baselines3
+torch
+PyOpenGL
+glfw
+matplotlib
+tensorboard
+pillow
